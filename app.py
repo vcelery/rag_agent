@@ -1,11 +1,3 @@
-"""
-Prompt-Based RAG Agent — Streamlit Community Cloud entry point.
-
-Env vars are loaded from (in priority order):
-  1. Streamlit secrets  (st.secrets)
-  2. .env file          (python-dotenv)
-  3. Real environment variables 
-"""
 
 import os
 import uuid
@@ -40,14 +32,23 @@ from PromptBasedRagAgent import graph  # noqa: E402
 from langchain_core.messages import HumanMessage, AIMessage  # noqa: E402
 
 # ── 3. Helpers ────────────────────────────────────────────────────────────────
-
 def make_thread_id(seed: str) -> str:
-    """Return a deterministic UUID5 from *seed* (session key)."""
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
 
+def file_to_base64(uploaded_file) -> tuple[str, str]:
+    mime_type = uploaded_file.type or "image/jpeg"
+    b64 = base64.b64encode(uploaded_file.read()).decode("utf-8")
+    return b64, mime_type
+
+def build_lc_content(text: str, image_b64: str | None, mime_type: str | None) -> str | list:
+    if image_b64:
+        return [
+            {"type": "text", "text": text or "Describe this image."},
+            {"type": "image", "base64": image_b64, "mime_type": mime_type},
+        ]
+    return text
 
 def run_graph(messages: list, thread_id: str) -> str:
-    """Invoke the LangGraph agent and return the last AI message content."""
     config = {"configurable": {"thread_id": thread_id}}
     result = graph.invoke({"messages": messages}, config=config)
     last = result["messages"][-1]
@@ -55,14 +56,44 @@ def run_graph(messages: list, thread_id: str) -> str:
         return last.content
     return str(last.get("content", last))
 
+def render_image(b64: str, width: int = 280) -> None:
+    st.image(base64.b64decode(b64), width=width)
 
-# ── 4. Streamlit UI ───────────────────────────────────────────────────────────
+# ── 3a. Recipe-image renderer ─────────────────────────────────────────────────
+_IMAGE_TAG = re.compile(r"\[RECIPE_IMAGE:([^\]]+)\]")
 
-st.title("📚 Prompt-based RAG Agent")
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_drive_image(file_id: str) -> bytes:
+    """Download a Drive image and cache it for 5 minutes."""
+    return gdrive_utils.download_bytes(file_id)
 
-# ── Session seed (stable per browser session) ────────────────────────────────
+def render_response(response: str) -> None:
+    """Render an assistant response, replacing [RECIPE_IMAGE:id] tags with images."""
+    parts = _IMAGE_TAG.split(response)
+    # split() on a group alternates:  text, file_id, text, file_id, …
+    for i, part in enumerate(parts):
+        if i % 2 == 0:          # plain text segment
+            if part.strip():
+                st.markdown(part.strip())
+        else:                   # captured file_id
+            file_id = part.strip()
+            try:
+                img_bytes = _fetch_drive_image(file_id)
+                st.image(img_bytes, use_container_width=True)
+            except Exception as e:
+                st.warning(f"⚠️ Could not load recipe image ({file_id}): {e}")
+
+# ── 4. Session state ──────────────────────────────────────────────────────────
 if "session_seed" not in st.session_state:
     st.session_state.session_seed = str(uuid.uuid4())
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "pending_b64" not in st.session_state:
+    st.session_state.pending_b64 = None
+if "pending_mime" not in st.session_state:
+    st.session_state.pending_mime = None
+if "show_camera" not in st.session_state:
+    st.session_state.show_camera = False
 
 thread_id = make_thread_id(st.session_state.session_seed)
 
