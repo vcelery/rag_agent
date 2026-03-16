@@ -4,7 +4,7 @@ Prompt-Based RAG Agent — Streamlit Community Cloud entry point.
 Env vars are loaded from (in priority order):
   1. Streamlit secrets  (st.secrets)
   2. .env file          (python-dotenv)
-  3. Real environment variables
+  3. Real environment variables 
 """
 
 import os
