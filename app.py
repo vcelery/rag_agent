@@ -66,34 +66,93 @@ if "session_seed" not in st.session_state:
 
 thread_id = make_thread_id(st.session_state.session_seed)
 
-# ── Sidebar: thread info + clear ─────────────────────────────────────────────
+# ── 5. Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.caption(f"Thread ID: `{thread_id}`")
     if st.button("🗑️ Clear conversation"):
         st.session_state.chat_history = []
+        st.session_state.pending_b64 = None
+        st.session_state.pending_mime = None
+        st.session_state.show_camera = False
+        st.rerun()
+    st.divider()
+    st.subheader("📎 Attach Image")
+
+    uploaded = st.file_uploader(
+        "Upload an image",
+        type=["png", "jpg", "jpeg", "gif", "webp"],
+        key="uploader",
+    )
+    if uploaded:
+        b64, mime = file_to_base64(uploaded)
+        st.session_state.pending_b64 = b64
+        st.session_state.pending_mime = mime
+
+    toggle_label = "📷 Close camera" if st.session_state.show_camera else "📷 Take a photo"
+    if st.button(toggle_label, use_container_width=True):
+        st.session_state.show_camera = not st.session_state.show_camera
         st.rerun()
 
-# ── Conversation state ────────────────────────────────────────────────────────
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    if st.session_state.show_camera:
+        camera_snap = st.camera_input("Take a photo", label_visibility="collapsed")
+        if camera_snap:
+            b64, mime = file_to_base64(camera_snap)
+            st.session_state.pending_b64 = b64
+            st.session_state.pending_mime = mime
+            st.session_state.show_camera = False
+            st.rerun()
 
-# ── Render existing messages ──────────────────────────────────────────────────
+    if st.session_state.pending_b64:
+        st.divider()
+        st.caption("📌 Attached — will send with next message")
+        render_image(st.session_state.pending_b64, width=220)
+        if st.button("✕ Remove image", use_container_width=True):
+            st.session_state.pending_b64 = None
+            st.session_state.pending_mime = None
+            st.rerun()
+
+# ── 6. Title ──────────────────────────────────────────────────────────────────
+st.title("Prompt Based Agent")
+
+# ── 7. Chat history ───────────────────────────────────────────────────────────
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        if msg["role"] == "user" and msg.get("image_b64"):
+            render_image(msg["image_b64"])
+        if msg.get("content"):
+            if msg["role"] == "assistant":
+                render_response(msg["content"])   # ← handles [RECIPE_IMAGE:…]
+            else:
+                st.markdown(msg["content"])
 
-# ── New user input ────────────────────────────────────────────────────────────
+# ── 8. Chat input ─────────────────────────────────────────────────────────────
 user_input = st.chat_input("Type your message…")
+if user_input or (st.session_state.pending_b64 and user_input is not None):
+    text = user_input or ""
+    image_b64  = st.session_state.pending_b64
+    image_mime = st.session_state.pending_mime
 
-if user_input:
     with st.chat_message("user"):
-        st.markdown(user_input)
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
+        if image_b64:
+            render_image(image_b64)
+        if text:
+            st.markdown(text)
+
+    st.session_state.chat_history.append({
+        "role": "user",
+        "content": text,
+        "image_b64": image_b64,
+        "image_mime": image_mime,
+    })
+
+    st.session_state.pending_b64  = None
+    st.session_state.pending_mime = None
 
     lc_messages = []
     for m in st.session_state.chat_history:
         if m["role"] == "user":
-            lc_messages.append(HumanMessage(content=m["content"]))
+            content = build_lc_content(m["content"], m.get("image_b64"), m.get("image_mime"))
+            lc_messages.append(HumanMessage(content=content))
         else:
             lc_messages.append(AIMessage(content=m["content"]))
 
@@ -103,6 +162,6 @@ if user_input:
                 response = run_graph(lc_messages, thread_id)
             except Exception as exc:
                 response = f"⚠️ Error: {exc}"
-        st.markdown(response)
+        render_response(response)   # ← handles [RECIPE_IMAGE:…]
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
